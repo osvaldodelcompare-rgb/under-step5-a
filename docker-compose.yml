@@ -1,0 +1,125 @@
+services:
+  postgres:
+    image: postgis/postgis:15-3.4
+    container_name: underground_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: underground_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres_dev_password
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d underground_db']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - underground_network
+
+  minio:
+    image: minio/minio:latest
+    container_name: underground_minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadminpassword
+    command: server /data --console-address ":9001"
+    ports:
+      - '9000:9000'
+      - '9001:9001'
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:9000/minio/health/live']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - underground_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: underground_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - underground_network
+
+  backend:
+    build:
+      context: ./backend
+    container_name: underground_backend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      API_PREFIX: api/v1
+      JWT_SECRET: super_secret_dev_key_change_me
+      JWT_EXPIRES_IN: 7d
+      JWT_REFRESH_SECRET: super_secret_refresh_dev_key_change_me
+      JWT_REFRESH_EXPIRES_IN: 30d
+      # Service names below (not "localhost") because the backend now runs
+      # inside the same Docker network as postgres/redis/minio.
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres_dev_password
+      DB_DATABASE: underground_db
+      DB_SYNCHRONIZE: 'true'
+      DB_LOGGING: 'false'
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      MINIO_ENDPOINT: minio
+      MINIO_PORT: 9000
+      MINIO_USE_SSL: 'false'
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadminpassword
+      MINIO_BUCKET_NAME: underground-media
+    ports:
+      - '3000:3000'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - underground_network
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: underground_frontend
+    restart: unless-stopped
+    ports:
+      - '8080:80'
+    depends_on:
+      - backend
+    networks:
+      - underground_network
+
+volumes:
+  postgres_data:
+    driver: local
+  minio_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  underground_network:
+    driver: bridge
